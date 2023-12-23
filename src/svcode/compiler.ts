@@ -1,4 +1,4 @@
-import { FunDef, Expr, ConcreteType, UsingName, Type, Program } from '../types';
+import { FunDef, Expr, ConcreteType, UsingName, Type, Program, mkType } from '../types';
 import { Value, PrimType, mkValue, MapOp, ReduceOp } from './types';
 import { Gen, ret, bind, emit, seq } from './gen-monad';
 
@@ -63,6 +63,13 @@ function ssd_to_ctrl(s: string) {
     });
 }
 
+function ssd_to_empty(s: string) {
+    return emit({
+        op: { name: 'ssd_to_empty' },
+        args: [s]
+    });
+}
+
 function dist(ssd: string, s: string, t: PrimType) {
     return emit({
         op: { name: 'dist', t },
@@ -91,10 +98,45 @@ function bool_to_ssd(flags: string) {
     });
 }
 
+function end_flags_to_ssd(ssd: string, flags: string) {
+    return emit({
+        op: { name: 'end_flags_to_ssd' },
+        args: [ssd, flags]
+    });
+}
+
+function end_flag_count(ssd: string, flags: string) {
+    return emit({
+        op: { name: 'reduce', op: { name: 'end_flag_count' } },
+        args: [ssd, flags]
+    });
+}
+
 function num_to_ssd(nums: string) {
     return emit({
         op: { name: 'num_to_ssd' },
         args: [nums]
+    });
+}
+
+function ssd_concat(ssd0: string, ssd1: string) {
+    return emit({
+        op: { name: 'ssd_concat' },
+        args: [ssd0, ssd1]
+    });
+}
+
+function il(t: PrimType, args: string[]) {
+    return emit({
+        op: { name: 'il', t, n: args.length / 2 },
+        args: args
+    });
+}
+
+function ssd_il(args: string[]) {
+    return emit({
+        op: { name: 'ssd_il', n: args.length / 2 },
+        args: args
     });
 }
 
@@ -299,13 +341,140 @@ export function exprCompiler(e: Expr, ctx: Context, ctrl: string): Gen<Value> {
 
                             }
                         }
+
+                        case 'mkseq': {
+                            const errMsg = e.op.name;
+                            const t0 = e.op.t!;
+                            const n = e.op.n!;
+
+                            return mkseq(st0, errMsg, ctrl, n, t0);
+                        }
+
+                        case 'concat': {
+                            return concat(st0, e.op.name);
+                        }
+
+                        case 'the': {
+                            if (st0.kind !== 'ss') _unreachable(e.op.name);
+                            return ret(st0.v);
+                        }
+
+                        case 'empty': {
+                            if (st0.kind !== 'ss') _unreachable(e.op.name);
+                            return bind(ssd_to_empty(st0.ssd), sid => ret(mkValue({ kind: 'sid', sid, t: 'bool' })));
+                        }
+
+                        case 'split': {
+                            if (st0.kind !== 'tup' || st0.sts.length !== 2) _unreachable(e.op.name);
+                            const st1 = st0.sts[0];
+                            const st2 = st0.sts[1];
+                            if (st1.kind !== 'ss' || st2.kind !== 'ss' || st2.v.kind !== 'sid') _unreachable(e.op.name);
+
+                            const boolsSsd = st2.ssd;
+                            const bools = st2.v.sid;
+                            const v = st1.v
+                            return bind(end_flag_count(boolsSsd, bools),
+                                ssd0 => bind(end_flags_to_ssd(boolsSsd, bools),
+                                    ssd1 =>
+                                        ret(mkValue({ kind: 'ss', ssd: ssd0, v: mkValue({ kind: 'ss', ssd: ssd1, v }) }))
+                                ));
+                        }
+                        case 'zip': {
+                            if (st0.kind !== 'tup' || st0.sts.length !== 2) _unreachable(e.op.name);
+                            const st1 = st0.sts[0];
+                            const st2 = st0.sts[1];
+                            if (st1.kind !== 'ss' || st2.kind !== 'ss') _unreachable(e.op.name);
+                            return ret(mkValue({ kind: 'ss', ssd: st1.ssd, v: mkValue({ kind: 'tup', sts: [st1.v, st2.v] }) }));
+                        }
+                        case 'append': {
+                            if (st0.kind !== 'tup' || st0.sts.length !== 2) _unreachable(e.op.name);
+                            const st1 = st0.sts[0];
+                            const st2 = st0.sts[1];
+                            if (st1.kind !== 'ss' || st2.kind !== 'ss') _unreachable(e.op.name);
+                            return bind(mkseq(mkValue({ kind: 'tup', sts: [st1, st2] }), e.op.name, ctrl, 2, mkType({ kind: 'seq', t: e.op.t! })),
+                                st3 => concat(st3, e.op.name)
+                            );
+                        }
+                        case 'elt':
+                        case 'len':
+                        case 'seq':
+                        case 'tab':
+                            throw new Error('Not implemented yet ' + e.op.name);
+
                     }
-                    throw new Error('Not implemented yet ' + e.op.name);
                 }
             );
         }
     }
 }
+
+function mkseq(st0: Value, errMsg: string, ctrl: string, n: number, t0: Type) {
+    if (st0.kind !== 'tup')
+        _unreachable(errMsg);
+    const sts = st0.sts;
+
+    const ssd = bind(rep(ctrl, n, "num"), num_to_ssd);
+    const ones = bind(rep(ctrl, 1, "num"), num_to_ssd);
+    const gens = seq(sts.map(st => bind(ones, ones => ret({ ssd: ones, v: st }))));
+    const v = bind(gens, sts0 => mkseqCompiler(t0, sts0));
+
+    return bind(ssd, ssd => bind(v, v => ret(mkValue({ kind: 'ss', ssd, v }))));
+}
+
+function concat(st0: Value, errMsg: string) {
+    if (st0.kind !== 'ss')
+        _unreachable(errMsg);
+    if (st0.v.kind !== 'ss')
+        _unreachable(errMsg);
+
+    const ssd0 = st0.ssd;
+    const ssd1 = st0.v.ssd;
+    const v = st0.v.v;
+
+    return bind(ssd_concat(ssd0, ssd1), ssd => ret(mkValue({ kind: 'ss', ssd, v })));
+}
+
+function mkseqCompiler(t: Type, sts: { ssd: string, v: Value }[]): Gen<Value> {
+    switch (t.kind) {
+        case 'prim':
+            {
+                const ss = sts.flatMap(x => {
+                    if (x.v.kind !== 'sid') _unreachable('mkseqCompiler');
+                    return [x.ssd, x.v.sid];
+                });
+                return bind(il(t.t, ss), sid => ret(mkValue({ kind: 'sid', sid, t: t.t })));
+            }
+        case 'tup':
+            const gens = t.ts.map((t0, i) =>
+                mkseqCompiler(t0, sts.map(({ ssd, v }) => {
+                    if (v.kind !== 'tup') _unreachable('mkseqCompiler');
+                    return { ssd, v: v.sts[i] };
+                }))
+            );
+            return bind(seq(gens), sts => ret(mkValue({ kind: 'tup', sts })));
+        case 'seq':
+            {
+                const ss = sts.flatMap(x => {
+                    if (x.v.kind !== 'ss') _unreachable('mkseqCompiler');
+                    return [x.ssd, x.v.ssd];
+                });
+                const gens = seq(sts.flatMap(x => {
+                    if (x.v.kind !== 'ss') _unreachable('mkseqCompiler');
+                    const { ssd, v } = x.v;
+                    return bind(ssd_concat(x.ssd, ssd),
+                        ssd0 => ret({ ssd: ssd0, v }))
+                }));
+                return bind(
+                    ssd_il(ss),
+                    ssd => bind(gens,
+                        sts0 => bind(mkseqCompiler(t.t, sts0),
+                            v => ret(mkValue({ kind: 'ss', ssd, v }))))
+                );
+            }
+        case 'arr': throw new Error('Not implemented')
+    }
+}
+
 
 function usingDistCompiler(ctx: Context, using: UsingName<ConcreteType>[], ssd: string, x: string, val: Value): Gen<Context> {
     const ctx0: Context = { [x]: { kind: 'val', val } }

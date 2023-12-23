@@ -1,0 +1,26 @@
+if:
+bool b
+Snum x
+Snum y
+Snum
+= the(append(x | b, y | !b))
+
+filter:
+S(num, bool) xs
+Snum
+=
+concat(
+    x in xs :
+        if(x.1, [x.0], [] num)
+)
+
+
+
+xs = &13;
+ys = &12;
+(
+    (if(true, xs, ys), if(false, xs, ys)),
+    filter(x in &10 :
+        x, x % 2 == 0
+    )
+)

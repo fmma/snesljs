@@ -1,0 +1,14 @@
+
+num logsumsum(num n) {
+    sum(concat(i in &n : x in &(10 * (i + 1)) : log(x + 1)))
+}
+
+num if(bool b, num x, num y) {
+    the(append(x | b, y | !b))
+}
+
+Snum foo() {
+    concat(x in &10 ? x % 2 == 0: y in & 10 : if(x == y, 0, x + y))
+}
+
+n in foo() : logsumsum(n)

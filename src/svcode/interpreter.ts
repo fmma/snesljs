@@ -1,4 +1,4 @@
-import { NamedInstruction, Op, Svcode, Value, mapStreamTree, Result } from './types';
+import { NamedInstruction, Op, Svcode, Value, mapStreamTree, Result, PrimType } from './types';
 
 export interface ReadCursor {
     stream: Stream<unknown>;
@@ -52,7 +52,7 @@ export class Stream<T> implements AsyncIterable<T> {
         }
         this.waitingForValue = [];
 
-        this.tryChurn();
+        this.tryChurn().catch(x => console.error('RUNTIME ERROR', x));;
     }
 
     [Symbol.asyncIterator](): AsyncIterator<T, any, undefined> {
@@ -69,7 +69,7 @@ export class Stream<T> implements AsyncIterable<T> {
                         else {
                             resolve({ done: false, value: this.buf! });
                             this.readers[i] = true;
-                            this.tryChurn();
+                            this.tryChurn().catch(x => console.error('RUNTIME ERROR', x));;
                         }
                     };
 
@@ -107,7 +107,7 @@ async function toArray<T>(s: Stream<T>): Promise<T[]> {
 }
 
 async function observe<T>(s: Stream<T>): Promise<void> {
-    for await (const _ of s) {}
+    for await (const _ of s) { }
 }
 
 export async function svcodeInterp(code: Svcode, value: Value): Promise<Result> {
@@ -121,11 +121,44 @@ export async function svcodeInterp(code: Svcode, value: Value): Promise<Result> 
     const p = Promise.all([...sids].map(x => observe(ctx[x])));
 
     for (const [_, stream] of Object.entries(ctx)) {
-        stream.churn();
+        stream.churn().catch(x => console.error('RUNTIME ERROR', x));
     }
-    await p;
+    try {
+        await p;
+    }
+    catch (e) {
+        console.error(e);
+    }
 
     return mapStreamTree(value, x => ctx[x].result);
+}
+
+export function reifyResult(result: Result): any[] {
+    switch (result.kind) {
+        case 'sid': return result.sid;
+        case 'ss':
+            const elts = reifyResult(result.v);
+            const ret: any[][] = [];
+            let cur: any[] = [];
+            let i = 0;
+            for (const ssd of result.ssd) {
+                if (ssd == null) {
+                    ret.push(cur);
+                    cur = [];
+                }
+                else {
+                    for (let j = 0; j < ssd; ++j) {
+                        cur.push(elts[i++]);
+                    }
+                }
+            }
+            return ret;
+        case 'tup':
+            const vs = result.sts.map(reifyResult);
+
+            return vs.length === 0 ? [] : vs[0].map((x, i) => vs.map(x => x[i]));
+        default: throw new Error('Not implemented');
+    }
 }
 
 export function instructionInterp(instr: NamedInstruction, ctx: Context, force: boolean) {
@@ -141,26 +174,35 @@ export function opInterp(op: Op, args: Stream<any>[]) {
         case 'ssd_pack': return ssd_pack(args[0], args[1]);
         case 'pack': return pack(args[0], args[1]);
         case 'dist': return dist(args[0], args[1]);
-        case 'bool_to_ssd': return bool_to_ssd(args[0])
+        case 'bool_to_ssd': return bool_to_ssd(args[0]);
+        case 'end_flags_to_ssd': return end_flags_to_ssd(args[0], args[1]);
         case 'num_to_ssd': return num_to_ssd(args[0]);
         case 'ssd_to_ctrl': return ssd_to_ctrl(args[0]);
+        case 'ssd_to_empty': return ssd_to_empty(args[0]);
         case 'map':
             switch (op.op.name) {
                 case 'log': return map_log(args[0]);
+                case 'not': return map_not(args[0]);
                 case 'plus': return map_plus(args[0], args[1]);
                 case 'times': return map_times(args[0], args[1]);
                 case 'div': return map_div(args[0], args[1]);
-                default: throw new Error('not implemented');
+                case 'mod': return map_mod(args[0], args[1]);
+                case 'eq': return map_eq(args[0], args[1]);
+                default: throw new Error('not implemented ' + op.op.name);
             }
         case 'reduce':
             switch (op.op.name) {
                 case 'sum': return reduce_sum(args[0], args[1]);
+                case 'end_flag_count': return end_flag_count(args[0], args[1]);
                 case 'prod':
                 case 'some':
                 case 'every':
                 case 'min':
                 case 'max': throw new Error('not implemented');
             }
+        case 'ssd_concat': return ssd_concat(args[0], args[1]);
+        case 'il': return il(args);
+        case 'ssd_il': return ssd_il(args);
         case 'scan': throw new Error('not implemented');
     }
 }
@@ -174,9 +216,7 @@ async function* num_to_ssd(xs: AsyncIterable<number>): AsyncIterable<Ssd> {
 }
 
 async function* bool_to_ssd(xs: AsyncIterable<boolean>): AsyncIterable<Ssd> {
-    let ends = 0;
     for await (const x of xs) {
-        ends++;
         if (x) {
             yield 1;
         }
@@ -215,7 +255,7 @@ async function* ssd_pack(flags: AsyncIterable<boolean>, xs: AsyncIterable<Ssd>):
 
     while (true) {
         if (yielding) {
-            const x = await itXs.next(); if (x.done) throw '';
+            const x = await itXs.next(); if (x.done) throw new Error('ssd_pack unexpected done #1');
             if (x.value == null) {
                 yielding = false;
                 yield null;
@@ -224,12 +264,14 @@ async function* ssd_pack(flags: AsyncIterable<boolean>, xs: AsyncIterable<Ssd>):
                 yield x.value;
         }
         else if (dropping) {
-            const x = await itXs.next(); if (x.done) throw '';
+            const x = await itXs.next(); if (x.done) throw new Error('ssd_pack unexpected done #2');
             if (x.value == null)
                 dropping = false;
         }
         else {
             let f = await itFlags.next();
+            if(f.done)
+                return;
             yielding = f.value;
             dropping = !f.value;
         }
@@ -242,6 +284,18 @@ async function* ssd_to_ctrl(ssds: AsyncIterable<Ssd>): AsyncIterable<null> {
             for (let i = 0; i < ssd; ++i) {
                 yield null;
             }
+        }
+    }
+}
+async function* ssd_to_empty(ssds: AsyncIterable<Ssd>): AsyncIterable<boolean> {
+    let acc = 0;
+    for await (const ssd of ssds) {
+        if (ssd == null) {
+            yield acc === 0;
+            acc = 0;
+        }
+        else {
+            acc += ssd;
         }
     }
 }
@@ -276,6 +330,13 @@ async function* map_div(s0: AsyncIterable<number>, s1: AsyncIterable<number>) {
         yield x / y;
     }
 }
+async function* map_mod(s0: AsyncIterable<number>, s1: AsyncIterable<number>) {
+    const itXs = s1[Symbol.asyncIterator]();
+    for await (const x of s0) {
+        const y = (await itXs.next()).value;
+        yield x % y;
+    }
+}
 
 
 async function* map_plus(s0: AsyncIterable<number>, s1: AsyncIterable<number>) {
@@ -286,9 +347,22 @@ async function* map_plus(s0: AsyncIterable<number>, s1: AsyncIterable<number>) {
     }
 }
 
+async function* map_eq(s0: AsyncIterable<number>, s1: AsyncIterable<number>) {
+    const itXs = s1[Symbol.asyncIterator]();
+    for await (const x of s0) {
+        const y = (await itXs.next()).value;
+        yield x === y;
+    }
+}
+
 async function* map_log(s0: AsyncIterable<number>) {
     for await (const x of s0) {
         yield Math.log(x);
+    }
+}
+async function* map_not(s0: AsyncIterable<number>) {
+    for await (const x of s0) {
+        yield !x;
     }
 }
 
@@ -303,6 +377,116 @@ async function* reduce_sum(ssds: AsyncIterable<Ssd>, s0: AsyncIterable<number>):
         else {
             for (let i = 0; i < ssd; ++i) {
                 acc += (await itXs.next()).value;
+            }
+        }
+    }
+}
+
+async function* end_flags_to_ssd(ssds: AsyncIterable<Ssd>, s0: AsyncIterable<boolean>): AsyncIterable<Ssd> {
+    const itXs = s0[Symbol.asyncIterator]();
+    for await (const ssd of ssds) {
+        if (ssd == null) {
+            yield null;
+        }
+        else {
+            for (let i = 0; i < ssd; ++i) {
+                yield 1;
+                if ((await itXs.next()).value)
+                    yield null;
+            }
+        }
+    }
+}
+
+async function* end_flag_count(ssds: AsyncIterable<Ssd>, s0: AsyncIterable<boolean>): AsyncIterable<Ssd> {
+    const itXs = s0[Symbol.asyncIterator]();
+    let acc = 1;
+    for await (const ssd of ssds) {
+        if (ssd == null) {
+            yield acc;
+            yield null;
+            acc = 1;
+        }
+        else {
+            for (let i = 0; i < ssd; ++i) {
+                if ((await itXs.next()).value)
+                    acc += 1;
+            }
+        }
+    }
+}
+
+
+async function* ssd_concat(ssd0: AsyncIterable<Ssd>, ssd1: AsyncIterable<Ssd>): AsyncIterable<Ssd> {
+    const it = ssd1[Symbol.asyncIterator]();
+
+    for await (const ssd of ssd0) {
+        if (ssd == null) {
+            yield null;
+            continue;
+        }
+        let count = ssd;
+        while (count) {
+            const v = (await it.next()).value;
+            if (v == null)
+                --count;
+            else
+                yield v;
+        }
+    }
+}
+
+async function* il<T>(args: AsyncIterable<Ssd | T>[]): AsyncIterable<T> {
+    const k = args.length / 2;
+    if(k === 0)
+        return;
+    const ssds = args.filter((_, i) => i % 2 === 0);
+    const sids = args.filter((_, i) => i % 2 === 1);
+
+    const ssdsIts = ssds.map(ssd => ssd[Symbol.asyncIterator]());
+    const sidsIts = sids.map(sid => sid[Symbol.asyncIterator]());
+
+    let i = 0;
+    while (true) {
+        const tmp = await ssdsIts[i].next();
+        if (tmp.done)
+            return;
+        const ssd = tmp.value;
+        if (ssd == null)
+            i = (i + 1) % k;
+        else {
+            for (let j = 0; j < ssd; ++j) {
+                const v = (await sidsIts[i].next()).value;
+                yield v;
+            }
+        }
+    }
+}
+
+async function* ssd_il(args: AsyncIterable<Ssd>[]): AsyncIterable<Ssd> {
+    const k = args.length / 2;
+
+    const ssds = args.filter((_, i) => i % 2 === 0);
+    const ssd0s = args.filter((_, i) => i % 2 === 1);
+
+    const ssdsIts = ssds.map(ssd => ssd[Symbol.asyncIterator]());
+    const ssd0sIts = ssd0s.map(sid => sid[Symbol.asyncIterator]());
+
+    let i = 0;
+    while (true) {
+        const tmp = await ssdsIts[i].next();
+        if (tmp.done)
+            return;
+        const ssd = tmp.value;
+        if (ssd == null)
+            i = (i + 1) % k;
+        else {
+            let j = 0;
+            while (j < ssd) {
+                const ssd0 = (await ssd0sIts[i].next()).value;
+                yield ssd0;
+                if (ssd0 == null)
+                    j++;
             }
         }
     }

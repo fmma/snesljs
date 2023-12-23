@@ -1,0 +1,19 @@
+{num} if(bool b, {num} x, {num} y) {
+    the(append({x | b using x}, {y | !b using y}))
+}
+
+{num} filter({(num, bool)} xs) {
+    concat({
+        if(x.1, [x.0], [] num)
+        : x in xs
+    })
+}
+
+let xs = &13 in
+let ys = &12 in
+
+(
+    (if(true, xs, ys), if(false, xs, ys)),
+    filter({ (x, x % 2 == 0) : x in &10})
+)
+

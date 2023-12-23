@@ -80,7 +80,7 @@ export type Expr
     | { kind: 'app', f: string, e0: Expr[] }
     | { kind: 'name', value: string, t?: Type }
     | { kind: 'cst', value: any, t?: PrimType }
-    | { kind: 'compr', e0: Expr, x: string, e1: Expr, using: UsingName<ConcreteType>[] }
+    | { kind: 'compr', e0: Expr, x: string, t?: Type, e1: Expr, e2?: Expr, using: UsingName<ConcreteType>[] }
     | { kind: 'cond', e0: Expr, e1: Expr, using: UsingName<Type>[] }
     | { kind: 'let', pat: Pattern, e0: Expr, e1: Expr }
     | { kind: 'tup', es: Expr[] }

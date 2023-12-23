@@ -39,22 +39,23 @@ export function exprInterp(e: Expr, ctx: Context): any {
         case 'app': {
             const def = ctx[e.f];
             if (def?.kind === 'fun') {
-                const vs = e.e0.map((x, i) => [def.def.args[i].name, {kind: 'val', value: interp(x, ctx)}]);
+                const vs = e.e0.map((x, i) => [def.def.args[i].name, { kind: 'val', value: interp(x, ctx) }]);
                 const ctx0: Context = { ...ctx, ...Object.fromEntries(vs) }
                 return interp(def.def.expr, ctx0);
             }
             throw new Error('App error ' + def);
         }
         case 'tup': {
-            return e.es.map(e0 => interp(e0, ctx));
+            const v = e.es.map(e0 => interp(e0, ctx));
+            return v;
         }
         case 'proj': {
             const v0 = interp(e.e, ctx);
-            return v0.ts[e.i];
+            return v0[e.i];
         }
         case 'compr': {
             const v1: any[] = interp(e.e1, ctx);
-            return v1.map(v => interp(e.e0, { ...ctx, [e.x]: {kind: 'val', value: v} }));
+            return v1.map(v => interp(e.e0, { ...ctx, [e.x]: { kind: 'val', value: v } }));
         }
         case 'cond': {
             const v1: boolean = interp(e.e1, ctx);
@@ -86,7 +87,7 @@ export function exprInterp(e: Expr, ctx: Context): any {
                 case 'leq': return v0 <= v1;
                 case 'geq': return v0 >= v1;
                 case 'iota':
-                    if(vArg < 0 || !Number.isInteger(vArg))
+                    if (vArg < 0 || !Number.isInteger(vArg))
                         throw new Error('iota error ' + vArg);
                     return [...Array(vArg).keys()];
                 case 'mkseq': return vArg;
@@ -97,13 +98,13 @@ export function exprInterp(e: Expr, ctx: Context): any {
                     throw new Error('the error (not unit length) ' + JSON.stringify(vArg));
                 case 'append': return v0.concat(v1);
                 case 'zip': return v0.map((_: any, i: number) => vArg.map((v: any[]) => v[i]));
-                case 'split': split(v0, v1);
+                case 'split': return split(v0, v1);
                 case 'concat': return vArg.flatMap((x: any) => x);
                 case 'tab': return vArg;
                 case 'seq': return vArg;
                 case 'len': return vArg.length;
                 case 'elt':
-                    if(v1 >= 0 && v1 < v0.length)
+                    if (v1 >= 0 && v1 < v0.length)
                         return v0[v1];
                     throw new Error('elt error (index out of bounds) ' + v0.length + " " + v1);
                 case 'reduce':
@@ -129,19 +130,19 @@ export function exprInterp(e: Expr, ctx: Context): any {
     }
 }
 
-function split<T>(xs: T[], sep: T): T[][] {
+function split<T>(xs: T[], sep: boolean[]): T[][] {
     const result: T[][] = [];
     let tmp: T[] = [];
-    for(const x of xs) {
-        if(x === sep) {
+    for (let i = 0; i < xs.length; ++i) {
+        const x = xs[i];
+        const b = sep[i];
+        tmp.push(x);
+        if (b) {
             result.push(tmp);
             tmp = [];
         }
-        else
-            tmp.push(x);
     }
-    if(xs.length)
-        result.push(tmp);
+    result.push(tmp);
 
     return result;
 }

@@ -1,0 +1,1 @@
+concat({ [append([10, x, 10], [x]), &x] : x in &30 })

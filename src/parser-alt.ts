@@ -32,8 +32,14 @@ const conreteTypeParser = typeParser.guard(isConcrete);
 const typeParser0: Parser<Type> = P.choices(
     primTypeParser.transform(t => mkType({ kind: 'prim', t })),
     typeParser.separate(',').surround('(', ')').transform(ts => mkType({ kind: 'tup', ts })),
-    conreteTypeParser.surround('[', ']').transform(t => mkType({ kind: 'arr', t })),
-    typeParser.surround('{', '}').transform(t => mkType({ kind: 'seq', t }))
+    P.object({
+        _: P.keyword('A'),
+        t: conreteTypeParser
+    }).transform(({t}) => mkType({ kind: 'arr', t })),
+    P.object({
+        _: P.keyword('S'),
+        t: typeParser
+    }).transform(({t}) => mkType({ kind: 'seq', t })),
 );
 
 
@@ -70,6 +76,19 @@ const opParser: Parser<Op> = P.choices(
 const atomParser: Parser<Expr> = P.choices(
     constantParser.transform((value): Expr => mkExpr({ kind: 'cst', value })),
     P.object({ f: nameParser, e0: tupleParser }).transform(obj => mkExpr({ kind: 'app', ...obj })),
+    P.object(({
+        x: nameParser,
+        _2: P.keyword('in'),
+        e1: exprParser,
+        e2: P.object({
+            _: P.keyword('?'),
+            e2: exprParser
+        }).transform(x => x.e2).optional(),
+        _1: P.keyword(':'),
+        e0: exprParser,
+    })).transform(({x, e0, e1, e2}) => {
+        return mkExpr({ kind: 'compr', x, e0, e1, e2, using: [] });
+    }),
     nameParser.transform((value): Expr => mkExpr({ kind: 'name', value })),
     P.object({ op: opParser, e0: exprParser }).transform(({ op, e0 }) => mkExpr({ kind: 'op', op, e0 })),
     exprParser.surround('(', ')'),
@@ -86,25 +105,7 @@ const atomParser: Parser<Expr> = P.choices(
         const es = xs.split('').map(c => mkExpr({ kind: 'cst', value: c }));
         return mkExpr({ kind: 'op', op: { name: 'mkseq' }, e0: mkExpr({ kind: 'tup', es }) });
     }),
-    tupleParser.transform((es): Expr => mkExpr({ kind: 'tup', es })),
-    P.object(({
-        _0: P.keyword('{'),
-        e0: exprParser,
-        _1: P.keyword(':'),
-        x: nameParser,
-        _2: P.keyword('in'),
-        e1: exprParser,
-        using: P.keyword('using').leading(nameParser.separate(',', true)).optional().transform(x => x?.map(x => ({ name: x })) ?? []),
-        _4: P.keyword('}'),
-    })).transform(obj => mkExpr({ kind: 'compr', ...obj })),
-    P.object(({
-        _0: P.keyword('{'),
-        e0: exprParser,
-        _1: P.keyword('|'),
-        e1: exprParser,
-        using: P.keyword('using').leading(nameParser.separate(',', true)).optional().transform(x => x?.map(x => ({ name: x })) ?? []),
-        _2: P.keyword('}'),
-    })).transform(obj => mkExpr({ kind: 'cond', ...obj }))
+    tupleParser.transform((es): Expr => mkExpr({ kind: 'tup', es }))
 );
 
 
@@ -142,6 +143,7 @@ const arithExprParser =
         ))
         .reduce(P.keyword('&&', mkBinop('and' as const)))
         .reduce(P.keyword('||', mkBinop('or' as const)))
+        .reduce(P.keyword('|', (e0, e1) => mkExpr({ kind: 'cond', e0, e1, using: [] })))
 
 const patternParser = nameParser;
 

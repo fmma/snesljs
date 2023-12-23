@@ -6,4 +6,4 @@ num logsumsum(num n) {
     sum({ logsum(10 * (i + 1)) : i in &n using n})
 }
 
-logsumsum(1000)
+logsumsum(100)

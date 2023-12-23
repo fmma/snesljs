@@ -1,3 +1,4 @@
+import { freevars } from './freevars';
 import { isPrimitive, Type, Expr, FunDef, mkType, isConcrete, FunDefType, Program, mkConcreteType, PrimType } from './types';
 
 export type Context = Record<string, { kind: 'fun', def: FunDef } | { kind: 'typ', t: Type } | undefined>
@@ -51,7 +52,7 @@ export function exprChecker(e: Expr, ctx: Context): Type {
                 typeEquals(ts0, ts1);
                 return t0.def.outType;
             }
-            throw new Error('App error ' + t0);
+            throw new Error(`App error ${e.f} ${t0}`);
         }
         case 'tup': {
             const ts = e.es.map(e0 => exprChecker(e0, ctx));
@@ -65,6 +66,7 @@ export function exprChecker(e: Expr, ctx: Context): Type {
             throw new Error('Projection error ' + e);
         }
         case 'compr': {
+            e.using = freevars(e.e0).filter(x => x.name !== e.x).map(x => ({name: x.name}));
             const ts = e.using.map(x => {
                 const t0 = ctx[x.name];
                 if (t0?.kind === 'typ' && isConcrete(t0.t)) {
@@ -74,9 +76,9 @@ export function exprChecker(e: Expr, ctx: Context): Type {
                 throw new Error('Non-concrete type in using ' + e);
             });
             const ctx0: Context = Object.fromEntries([...ts, ...Object.entries(ctx).filter(([x, v]) => v?.kind === 'fun')]);
-            console.log(ctx0);
             const t1 = exprChecker(e.e1, ctx);
             if (t1.kind === 'seq') {
+                e.t = t1.t;
                 ctx0[e.x] = { kind: 'typ', t: t1.t };
                 const t0 = exprChecker(e.e0, ctx0);
                 return mkType({ kind: 'seq', t: t0 });
@@ -84,6 +86,7 @@ export function exprChecker(e: Expr, ctx: Context): Type {
             throw new Error('Comprehension error (not sequence) ' + e)
         }
         case 'cond': {
+            e.using = freevars(e.e0);
             const ts = e.using.map(x => {
                 const t0 = ctx[x.name];
                 if (t0?.kind === 'typ') {
@@ -122,7 +125,7 @@ export function exprChecker(e: Expr, ctx: Context): Type {
                     typeEquals(ts, [t0, t0]);
                     if (isPrimitive(t0)) {
                         e.op.t = t0.t;
-                        return t0;
+                        return mkType({kind: 'prim', t: 'bool'});
                     }
                     throw new Error('Comparison error ' + t0);
                 case 'iota':
@@ -180,7 +183,7 @@ export function exprChecker(e: Expr, ctx: Context): Type {
                 case 'split':
                     {
                         if (t0?.kind === 'seq') {
-                            typeEquals(ts, [t0, t0.t]);
+                            typeEquals(ts, [t0, mkType({kind: 'seq', t: mkType({ kind: 'prim', t: 'bool' })})]);
                             e.op.t = t0.t;
                             return mkType({ kind: 'seq', t: t0 });
                         }
